@@ -4,7 +4,7 @@
   <img src="assets/mnm.png" alt="MNM" width="400"/>
 </p>
 
-Multivariate Normative Modeling Pipeline.
+Perplexity Pipeline: Cooperation Marburg-Mannheim
 
 ## Setup
 
