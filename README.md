@@ -4,7 +4,7 @@
   <img src="assets/mnm.png" alt="MNM" width="70%"/>
 </p>
 
-Normative modelling pipeline that uses **LLM perplexity** as a proxy for formal thought disorder in TAT (Thematic Apperception Test) transcripts. Sentences from psychiatric patients (SSD, MDD, BD) and healthy controls are scored by how "surprising" they are to a language model under different prompting conditions.
+Pipeline that uses **LLM perplexity** as a proxy for formal thought disorder in TAT (Thematic Apperception Test) transcripts. Sentences from psychiatric patients (SSD, MDD, BD) and healthy controls are scored by how "surprising" they are to a language model under different prompting conditions.
 
 ---
 
