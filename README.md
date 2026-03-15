@@ -1,4 +1,4 @@
-# Marburg-Mannheim Perplexity Transdiagnostic
+# Marburg-Mannheim Perplexity Transdiagnostic Analyses
 
 <p align="center">
   <img src="assets/mnm.png" alt="MNM" width="70%"/>
