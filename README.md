@@ -1,10 +1,9 @@
-# Marburg-Mannheim Perplexity Transdiagnostic Analyses
+# Marburg-Mannheim: Perplexity Transdiagnostic Analyses
 
 <p align="center">
   <img src="assets/mnm.png" alt="MNM" width="70%"/>
 </p>
 
-Perplexity Pipeline: Cooperation Marburg-Mannheim
 
 ## Setup
 
@@ -18,4 +17,10 @@ uv sync
 
 ```bash
 uv run mnm_ppl
+```
+
+## Installation
+
+```bash
+uv add <package>
 ```
