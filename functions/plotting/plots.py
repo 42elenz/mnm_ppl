@@ -6,12 +6,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
-from scipy.stats import gaussian_kde, kruskal, mannwhitneyu, spearmanr
+from scipy.stats import gaussian_kde, kruskal, mannwhitneyu, spearmanr, chi2_contingency
 from matplotlib.patches import Patch
 import statsmodels.api as sm
 
+def fmt_p(p):
+    if p < 0.001:
+        return "< 0.001"
+    elif p < 0.01:
+        return f"{p:.3f}"
+    elif round(p, 2) == 0.05:
+        return f"{p:.3f}"  # Grenzfälle immer 3 Stellen
+    else:
+        return f"{p:.2f}"
+
 # Consistent styling
-DIAG_ORDER = ["HC", "BD", "MDD", "SSD"]
+DIAG_ORDER = ["HC", "MDD", "BD", "SSD"]
 DIAG_COLORS = {"HC": "#3498DB", "SSD": "#E74C3C", "MDD": "#F39C12", "BD": "#9B59B6"}
 GROUP_COLORS = {"control": "#3498db", "patient": "#e74c3c", "high_ppl": "#c0392b", "normal_ppl": "#f39c12"}
 
@@ -32,25 +42,83 @@ def plot_group_boxplot(
     var: str,
     title: str = "",
     save_path: str | None = None,
+    ylabel: str | None = "Mean Loss",
+    plot_style: str = "box",
 ):
-    """Boxplot + strip plot of *var* split by is_patient."""
+    """Plot *var* split by is_patient using box or raincloud style.
+
+    Parameters
+    ----------
+    plot_style : str
+        "box" (default) for boxplot + stripplot, or "raincloud" for
+        half-violin + jittered points + narrow boxplot.
+    """
     fig, ax = plt.subplots(figsize=(5, 5))
     plot_df = df.copy()
     plot_df["Group"] = plot_df["is_patient"].map({0: "HC", 1: "Patient"})
-    sns.boxplot(
-        data=plot_df, x="Group", y=var, hue="Group",
-        order=["HC", "Patient"],
-        palette={"HC": GROUP_COLORS["control"], "Patient": GROUP_COLORS["patient"]},
-        width=0.5, ax=ax, legend=False,
-    )
-    sns.stripplot(
-        data=plot_df, x="Group", y=var, hue="Group",
-        order=["HC", "Patient"],
-        palette={"HC": "black", "Patient": "black"},
-        alpha=0.4, size=3, jitter=True, ax=ax, legend=False,
-    )
-    ax.set_ylabel(var)
-    ax.set_title(title or var)
+
+    if plot_style == "box":
+        sns.boxplot(
+            data=plot_df, x="Group", y=var, hue="Group",
+            order=["HC", "Patient"],
+            palette={"HC": GROUP_COLORS["control"], "Patient": GROUP_COLORS["patient"]},
+            width=0.5, ax=ax, legend=False,
+        )
+        sns.stripplot(
+            data=plot_df, x="Group", y=var, hue="Group",
+            order=["HC", "Patient"],
+            palette={"HC": "black", "Patient": "black"},
+            alpha=0.4, size=3, jitter=True, ax=ax, legend=False,
+        )
+    elif plot_style == "raincloud":
+        order = ["HC", "Patient"]
+        colors = {"HC": GROUP_COLORS["control"], "Patient": GROUP_COLORS["patient"]}
+
+        # Half-violin (cloud) on the right side of each group position
+        for i, grp in enumerate(order):
+            vals = plot_df.loc[plot_df["Group"] == grp, var].dropna().values
+            if len(vals) < 3:
+                continue
+            kde = gaussian_kde(vals)
+            ys = np.linspace(vals.min(), vals.max(), 200)
+            density = kde(ys)
+            density = density / density.max() * 0.35
+            ax.fill_betweenx(ys, i, i + density, color=colors[grp], alpha=0.4, linewidth=0)
+            ax.plot(i + density, ys, color=colors[grp], linewidth=1)
+
+        # Rain (jittered points) on the left side
+        for i, grp in enumerate(order):
+            vals = plot_df.loc[plot_df["Group"] == grp, var].dropna().values
+            if len(vals) == 0:
+                continue
+            jitter = np.random.uniform(-0.18, -0.03, size=len(vals))
+            ax.scatter(i + jitter, vals, color=colors[grp], alpha=0.45, s=12, edgecolors="none", zorder=2)
+
+        # Narrow boxplot in the center
+        bp_data = [plot_df.loc[plot_df["Group"] == grp, var].dropna().values for grp in order]
+        bp = ax.boxplot(
+            bp_data,
+            positions=range(len(order)),
+            widths=0.12,
+            patch_artist=True,
+            showfliers=False,
+            zorder=3,
+        )
+        for patch, grp in zip(bp["boxes"], order):
+            patch.set_facecolor(colors[grp])
+            patch.set_alpha(0.85)
+        for element in ["whiskers", "caps", "medians"]:
+            for line in bp[element]:
+                line.set_color("black")
+                line.set_linewidth(1)
+
+        ax.set_xticks(range(len(order)))
+        ax.set_xticklabels(order)
+    else:
+        raise ValueError("plot_style must be 'box' or 'raincloud'")
+
+    ax.set_ylabel(ylabel if ylabel is not None else var)
+    ax.set_title(title)
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     _savefig(fig, save_path)
@@ -92,7 +160,12 @@ def plot_diagnostic_groups(
     ax1.grid(axis="y", alpha=0.3)
 
     # Panel B: % with high PPL (if column exists)
-    high_col = var.replace("_ppl_median", "_high")
+    if var.endswith("_ppl_median"):
+        high_col = var.replace("_ppl_median", "_high")
+    elif var.endswith("_div_median"):
+        high_col = var.replace("_div_median", "_high")
+    else:
+        high_col = f"{var}_high"
     if high_col not in df.columns:
         hc_vals = df[df["diagnosis"] == "HC"][var].dropna()
         if len(hc_vals) > 0:
@@ -386,6 +459,53 @@ def plot_roc_curves(
     return fig
 
 
+def plot_incremental_value_roc(
+    y_true: np.ndarray,
+    models_dict: dict,
+    save_path: str | None = None,
+    show_title: bool = True,
+    show_legend: bool = True,
+):
+    """
+    Plot ROC curves for models in the comprehensive comparison.
+    """
+    from sklearn.metrics import roc_curve
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    # Styling configuration
+    styles = {
+        "PPL Only": {"color": "#E67E22", "ls": "-", "lw": 1.5},
+        "Median LLM Loss Only": {"color": "#E67E22", "ls": "-", "lw": 1.5},
+        "Length Only": {"color": "gray", "ls": "--", "lw": 1.5},
+        "Length + PPL": {"color": "#E74C3C", "ls": "-", "lw": 2.5},
+        "Length + Median LLM Loss": {"color": "#E74C3C", "ls": "-", "lw": 2.5},
+        "Confounders Only": {"color": "#34495E", "ls": "--", "lw": 1.5},
+        "Confounders + PPL": {"color": "#27AE60", "ls": "-", "lw": 2.5},
+        "Confounders + Median LLM Loss": {"color": "#27AE60", "ls": "-", "lw": 2.5},
+        "Confounders + Proximity": {"color": "#8E44AD", "ls": "-.", "lw": 2.0},
+        "Confounders + Proximity + Median LLM Loss": {"color": "#2980B9", "ls": "-", "lw": 2.5},
+    }
+
+    for name, result in models_dict.items():
+        fpr, tpr, _ = roc_curve(y_true, result["prob"])
+        style = styles.get(name, {"color": "black", "ls": "-", "lw": 1})
+        ax.plot(fpr, tpr, label=f"{name} (AUC={result['auc']:.3f})", **style)
+
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.3)
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    if show_title:
+        ax.set_title("Incremental Predictive Value (Multi-Model Comparison)")
+    if show_legend:
+        ax.legend(loc="lower right", fontsize=8)
+    ax.grid(alpha=0.2)
+
+    fig.tight_layout()
+    _savefig(fig, save_path)
+    plt.show()
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # 9. Confounder analysis (6-panel)
 # ---------------------------------------------------------------------------
@@ -500,35 +620,53 @@ def plot_raw_vs_residualized(
     df: pd.DataFrame,
     ppl_var: str,
     wc_var: str,
+    confounders: list[str] | None = None,
     save_path: str | None = None,
 ):
-    """Four-panel figure: KDE raw, KDE residualized, Cohen's d bar, summary text."""
-    analysis_df = df.copy()
-    analysis_df["log_words"] = np.log1p(analysis_df[wc_var])
-    analysis_df["ppl_log"] = np.log(analysis_df[ppl_var].clip(lower=1e-6))
+    """Four-panel figure: KDE raw, KDE residualized, Cohen's d bar, rain plot.
 
-    if "education" in analysis_df.columns:
-        tmp = analysis_df[["ppl_log", "log_words", "education"]].dropna()
-        X = sm.add_constant(tmp[["log_words", "education"]])
+    Uses the same residualization as the main pipeline (OLS on raw median PPL,
+    fit on HC only) when *confounders* is provided.  Falls back to log_words +
+    education if *confounders* is None (legacy behaviour).
+    """
+    from functions.analysis.statistics import residualize_ppl as _residualize_ppl
+
+    analysis_df = df.copy()
+
+    if confounders is not None:
+        resid = _residualize_ppl(analysis_df, ppl_var, confounders)
+        analysis_df["ppl_residual"] = np.nan
+        analysis_df.loc[resid.index, "ppl_residual"] = resid
     else:
-        tmp = analysis_df[["ppl_log", "log_words"]].dropna()
-        X = sm.add_constant(tmp[["log_words"]])
-    resid = sm.OLS(tmp["ppl_log"], X).fit().resid
-    analysis_df.loc[tmp.index, "ppl_residual"] = resid
+        # Legacy fallback: log-scale, words + education only
+        analysis_df["log_words"] = np.log1p(analysis_df[wc_var])
+        analysis_df["ppl_log"] = np.log(analysis_df[ppl_var].clip(lower=1e-6))
+        if "education" in analysis_df.columns:
+            tmp = analysis_df[["ppl_log", "log_words", "education"]].dropna()
+            X = sm.add_constant(tmp[["log_words", "education"]])
+        else:
+            tmp = analysis_df[["ppl_log", "log_words"]].dropna()
+            X = sm.add_constant(tmp[["log_words"]])
+        resid = sm.OLS(tmp["ppl_log"], X).fit().resid
+        analysis_df.loc[tmp.index, "ppl_residual"] = resid
+
+    # Column used for the raw panels
+    raw_col = ppl_var
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # Panel A: KDE raw
+    # Panel A: KDE raw (median PPL)
     ax = axes[0, 0]
     for dx in DIAG_ORDER:
-        sub = analysis_df[analysis_df["diagnosis"] == dx]["ppl_log"].dropna()
+        sub = analysis_df[analysis_df["diagnosis"] == dx][raw_col].dropna()
         if len(sub) > 2:
             kde = gaussian_kde(sub)
             xs = np.linspace(sub.min(), sub.max(), 200)
             ax.plot(xs, kde(xs), color=DIAG_COLORS[dx], label=dx)
             ax.axvline(sub.mean(), color=DIAG_COLORS[dx], linestyle="--", alpha=0.5)
-    ax.set_title("A) Raw log-perplexity by diagnosis")
-    ax.set_xlabel("log(PPL)")
+    ax.set_title("a) Raw median perplexity by diagnosis")
+    ax.set_xlabel("Median PPL")
+    ax.set_ylabel("Density")
     ax.legend()
     ax.grid(alpha=0.2)
 
@@ -541,19 +679,20 @@ def plot_raw_vs_residualized(
             xs = np.linspace(sub.min(), sub.max(), 200)
             ax.plot(xs, kde(xs), color=DIAG_COLORS[dx], label=dx)
             ax.axvline(sub.mean(), color=DIAG_COLORS[dx], linestyle="--", alpha=0.5)
-    ax.set_title("B) Residualized perplexity by diagnosis")
-    ax.set_xlabel("Residual PPL")
+    ax.set_title("b) Residualized perplexity by diagnosis")
+    ax.set_xlabel("Residualized Median PPL")
+    ax.set_ylabel("Density")
     ax.legend()
     ax.grid(alpha=0.2)
 
     # Panel C: Cohen's d comparison
     ax = axes[1, 0]
-    hc_raw = analysis_df[analysis_df["diagnosis"] == "HC"]["ppl_log"].dropna()
+    hc_raw = analysis_df[analysis_df["diagnosis"] == "HC"][raw_col].dropna()
     hc_res = analysis_df[analysis_df["diagnosis"] == "HC"]["ppl_residual"].dropna()
     d_raw, d_res = [], []
     dx_labels = [dx for dx in DIAG_ORDER if dx != "HC"]
     for dx in dx_labels:
-        grp_raw = analysis_df[analysis_df["diagnosis"] == dx]["ppl_log"].dropna()
+        grp_raw = analysis_df[analysis_df["diagnosis"] == dx][raw_col].dropna()
         grp_res = analysis_df[analysis_df["diagnosis"] == dx]["ppl_residual"].dropna()
         ps = np.sqrt(((len(grp_raw) - 1) * grp_raw.std() ** 2 + (len(hc_raw) - 1) * hc_raw.std() ** 2) / (len(grp_raw) + len(hc_raw) - 2))
         d_raw.append((grp_raw.mean() - hc_raw.mean()) / ps if ps > 0 else 0)
@@ -565,18 +704,54 @@ def plot_raw_vs_residualized(
     ax.set_xticks(x)
     ax.set_xticklabels(dx_labels)
     ax.set_ylabel("Cohen's d (vs HC)")
-    ax.set_title("C) Effect sizes: raw vs residualized")
+    ax.set_title("a) Effect sizes: raw vs residualized")
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
 
-    # Panel D: summary
+    # Panel D: rain plot of residualized perplexity by diagnosis
     ax = axes[1, 1]
-    ax.axis("off")
-    text_lines = ["Summary:", ""]
-    for dx, dr, dre in zip(dx_labels, d_raw, d_res):
-        text_lines.append(f"{dx}: raw d={dr:.3f}, residual d={dre:.3f}")
-    ax.text(0.1, 0.5, "\n".join(text_lines), fontsize=11, va="center", family="monospace")
-    ax.set_title("D) Summary")
+    diags_present = [dx for dx in DIAG_ORDER if dx in analysis_df["diagnosis"].values]
+    rain_df = analysis_df[analysis_df["diagnosis"].isin(diags_present)][["diagnosis", "ppl_residual"]].dropna()
+
+    # Half-violin (cloud)
+    for i, dx in enumerate(diags_present):
+        vals = rain_df[rain_df["diagnosis"] == dx]["ppl_residual"].values
+        if len(vals) < 3:
+            continue
+        kde = gaussian_kde(vals)
+        ys = np.linspace(vals.min(), vals.max(), 200)
+        density = kde(ys)
+        # Scale density so the widest part is ~0.35
+        density = density / density.max() * 0.35
+        # Draw half-violin on the right side of position
+        ax.fill_betweenx(ys, i, i + density, color=DIAG_COLORS.get(dx, "#888"),
+                         alpha=0.4, linewidth=0)
+        ax.plot(i + density, ys, color=DIAG_COLORS.get(dx, "#888"), linewidth=1)
+
+    # Rain (individual points, jittered to the left)
+    for i, dx in enumerate(diags_present):
+        vals = rain_df[rain_df["diagnosis"] == dx]["ppl_residual"].values
+        jitter = np.random.uniform(-0.15, -0.02, size=len(vals))
+        ax.scatter(i + jitter, vals, color=DIAG_COLORS.get(dx, "#888"),
+                   alpha=0.4, s=10, edgecolors="none", zorder=2)
+
+    # Boxplot (narrow, on the center)
+    bp_data = [rain_df[rain_df["diagnosis"] == dx]["ppl_residual"].values for dx in diags_present]
+    bp = ax.boxplot(bp_data, positions=range(len(diags_present)), widths=0.1,
+                    patch_artist=True, showfliers=False, zorder=3)
+    for patch, dx in zip(bp["boxes"], diags_present):
+        patch.set_facecolor(DIAG_COLORS.get(dx, "#888"))
+        patch.set_alpha(0.8)
+    for element in ["whiskers", "caps", "medians"]:
+        for line in bp[element]:
+            line.set_color("black")
+            line.set_linewidth(1)
+
+    ax.set_xticks(range(len(diags_present)))
+    ax.set_xticklabels(diags_present)
+    ax.set_ylabel("Residualized Median PPL")
+    ax.set_title("b) Residualized perplexity by diagnosis")
+    ax.grid(axis="y", alpha=0.2)
 
     fig.tight_layout()
     _savefig(fig, save_path)
@@ -637,3 +812,346 @@ def plot_raw_perplexity_basic(
     _savefig(fig, save_path)
     plt.show()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Matching balance: table + Love plot
+# ---------------------------------------------------------------------------
+
+def plot_matching_balance(
+    df_full: pd.DataFrame,
+    df_matched: pd.DataFrame,
+    match_vars: list[str],
+    figure_dir: str = "figures",
+) -> pd.DataFrame:
+    """Display a balance table and Love plot comparing before/after matching.
+
+    Returns the balance DataFrame for further use.
+    """
+    from functions.analysis.statistics import matching_balance_table
+
+    bal_before = matching_balance_table(df_full, match_vars)
+    bal_after = matching_balance_table(df_matched, match_vars)
+
+    bal = bal_before[["Variable"]].copy()
+    bal["HC (before)"] = bal_before["HC"]
+    bal["Patient (before)"] = bal_before["Patient"]
+    bal["SMD (before)"] = bal_before["SMD"]
+    bal["HC (after)"] = bal_after["HC"]
+    bal["Patient (after)"] = bal_after["Patient"]
+    bal["SMD (after)"] = bal_after["SMD"]
+    bal["p (after)"] = bal_after["p-value"]
+
+    display(bal.style.format({
+        "SMD (before)": "{:.3f}", "SMD (after)": "{:.3f}", "p (after)": "{:.4f}",
+    }))
+
+    # Love plot
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    y = np.arange(len(match_vars))
+    ax.scatter(bal["SMD (before)"], y, marker="o", s=60, label="Before matching", zorder=3)
+    ax.scatter(bal["SMD (after)"], y, marker="D", s=60, label="After matching", zorder=3)
+    ax.axvline(0.1, color="grey", ls="--", lw=1, label="SMD = 0.1 threshold")
+    ax.set_yticks(y)
+    ax.set_yticklabels(bal["Variable"])
+    ax.set_xlabel("Standardised Mean Difference (SMD)")
+    ax.set_title("Covariate balance: HC vs Patients")
+    ax.legend(fontsize=8)
+    ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    _savefig(fig, os.path.join(figure_dir, "matching_balance_love_plot.png"))
+    plt.show()
+
+    print(f"\nN before: {len(df_full)} | N after matching: {len(df_matched)}")
+    print(f"SMD < 0.1 on all vars after matching: {(bal['SMD (after)'] < 0.1).all()}")
+    return bal
+
+
+# ---------------------------------------------------------------------------
+# Clinical correlation tables: format, clean, and save
+# ---------------------------------------------------------------------------
+
+def format_and_save_clinical_correlations(
+    merged_corr: pd.DataFrame,
+    setting_name: str,
+    figure_dir: str,
+    fmt_p_func,
+) -> pd.DataFrame:
+    """
+    Format and save clinical correlation tables (raw vs residualized).
+    
+    Parameters
+    ----------
+    merged_corr : pd.DataFrame
+        DataFrame with columns like p_raw, p_resid, p_fdr_raw, p_fdr_resid, r_raw, r_resid.
+    setting_name : str
+        Name of the setting (e.g. 'with_outliers', 'without_outliers').
+    figure_dir : str
+        Base figure directory.
+    fmt_p_func : callable
+        Function to format p-values (e.g., fmt_p).
+    
+    Returns
+    -------
+    pd.DataFrame
+        Formatted dataframe, sorted by p_raw, with stars instead of True/False.
+    """
+    
+    # Convert p-values to publication-style stars
+    def _p_to_stars(p):
+        if pd.isna(p):
+            return ""
+        if p < 0.001:
+            return "***"
+        if p < 0.01:
+            return "**"
+        if p < 0.05:
+            return "*"
+        return ""
+
+    if "p_fdr_raw" in merged_corr.columns:
+        merged_corr["sig_fdr_raw"] = merged_corr["p_fdr_raw"].apply(_p_to_stars)
+    if "p_fdr_resid" in merged_corr.columns:
+        merged_corr["sig_fdr_resid"] = merged_corr["p_fdr_resid"].apply(_p_to_stars)
+
+    merged_corr = merged_corr.sort_values(by="p_raw", ascending=True, na_position="last")
+
+    # Save one table per setting for publication use
+    tables_dir = os.path.join(figure_dir, setting_name, "tables")
+    os.makedirs(tables_dir, exist_ok=True)
+    corr_out_csv = os.path.join(tables_dir, "clinical_correlations_raw_vs_residualized.csv")
+    corr_out_xlsx = os.path.join(tables_dir, "clinical_correlations_raw_vs_residualized.xlsx")
+    
+
+    # Clean column names and formatting for presentation
+    df_clinical = merged_corr.copy()
+    df_clinical = df_clinical.rename(columns={
+        "Clinical Variable": "Variable",
+        "r_raw": "ρ (raw)",
+        "p_raw": "P (raw)",
+        "n_raw": "n",
+        "p_fdr_raw": "P FDR (raw)",
+        "sig_fdr_raw": "Sig.",
+        "r_resid": "ρ (residualized)",
+        "p_resid": "P (residualized)",
+        "n_resid": "n",
+        "p_fdr_resid": "P FDR (residualized)",
+        "sig_fdr_resid": "Sig.",
+    })
+
+    # Clean variable names for better readability
+    name_map = {
+        "YMRS_Sum": "YMRS total",
+        "verbal_IQ": "Verbal IQ",
+        "SAPS_Sum_ENIGMA": "SAPS total",
+        "SANS_AbulieApathie_ENIGMA": "SANS abulia/apathy",
+        "GAF": "GAF",
+        "SAPS_PositiveFormaleDenkstoerung_ENIGMA": "SAPS positive FTD",
+        "SANS_Affektverflachung_ENIGMA": "SANS affective flattening",
+        "SANS_AlogieParalogie_ENIGMA": "SANS alogia",
+        "LexicalVF": "Lexical verbal fluency",
+        "TLI_Impoverished": "TLI impoverished",
+        "SAPS_Wahn_ENIGMA": "SAPS delusions",
+        "SemanticVF": "Semantic verbal fluency",
+        "SANS_Anhedonie_ENIGMA": "SANS anhedonia",
+        "SAPS_Halluzinationen_ENIGMA": "SAPS hallucinations",
+        "HAMD_Sum17": "HAMD-17 total",
+        "SAPS_BizarresVerhalten_ENIGMA": "SAPS bizarre behaviour",
+        "TLI_Non_specific": "TLI non-specific",
+        "TLI_Disorganization": "TLI disorganization",
+    }
+    if "Variable" in df_clinical.columns:
+        df_clinical["Variable"] = df_clinical["Variable"].map(name_map).fillna(df_clinical["Variable"])
+
+    # NPJ-style rounding
+    if "ρ (raw)" in df_clinical.columns:
+        df_clinical["ρ (raw)"] = df_clinical["ρ (raw)"].round(2)
+    if "ρ (residualized)" in df_clinical.columns:
+        df_clinical["ρ (residualized)"] = df_clinical["ρ (residualized)"].round(2)
+    
+    # Format p-values using provided function
+    for col in ["P (raw)", "P FDR (raw)", "P (residualized)", "P FDR (residualized)"]:
+        if col in df_clinical.columns:
+            df_clinical[col] = df_clinical[col].apply(fmt_p_func)
+
+    df_clinical.to_csv(corr_out_csv, index=False)
+    df_clinical.to_excel(corr_out_xlsx, index=False)
+    print(f"\n  Clinical correlations (raw vs residualized), sorted by p_raw:")
+    print(merged_corr.to_string(index=False))
+    print(f"  Saved tables: {corr_out_csv} | {corr_out_xlsx}")
+    
+    return merged_corr
+
+
+
+ 
+# ── Helper: Mean ± SD, rounded to 1 decimal ──────
+def mean_sd(series):
+    s = series.dropna()
+    if len(s) == 0:
+        return "—"
+    return f"{s.mean():.1f} ± {s.std():.1f}"
+ 
+# ── Helper: Median [IQR] ──────
+def median_iqr(series):
+    s = series.dropna()
+    if len(s) == 0:
+        return "—"
+    return f"{s.median():.1f} [{s.quantile(0.25):.1f}–{s.quantile(0.75):.1f}]"
+ 
+# ── Helper: n (%) for binary/categorical ──────
+def n_pct(series, value):
+    s = series.dropna()
+    n = (s == value).sum()
+    pct = n / len(s) * 100
+    return f"{n} ({pct:.1f}%)"
+ 
+ 
+# ══════════════════════════════════════════════════════════════════
+# TABLE 1: Sample Characteristics (Main Table)
+# ══════════════════════════════════════════════════════════════════
+ 
+def create_table_demo(df, model_name="qwen"):
+    """Create Table 1: Demographic and clinical characteristics."""
+ 
+    groups = {"HC": df[df["is_patient"] == 0],
+              "BD": df[df["diagnosis"] == "BD"],
+              "MDD": df[df["diagnosis"] == "MDD"],
+              "SSD": df[df["diagnosis"] == "SSD"]}
+ 
+    patients = df[df["is_patient"] == 1]
+    rows = []
+ 
+    # ── n ──
+    rows.append({
+        "Variable": "n",
+        "HC": str(len(groups["HC"])),
+        "BD": str(len(groups["BD"])),
+        "MDD": str(len(groups["MDD"])),
+        "SSD": str(len(groups["SSD"])),
+        "P": ""
+    })
+ 
+    # ── Demographic: continuous variables ──
+    demo_vars = [
+        ("Age, years", "age"),
+        ("Education, years", "education"),
+        ("Verbal IQ", "verbal_IQ"),
+    ]
+ 
+    for label, col in demo_vars:
+        vals = []
+        group_data = []
+        for name in ["HC", "BD", "MDD", "SSD"]:
+            g = groups[name][col].dropna()
+            vals.append(mean_sd(groups[name][col]))
+            group_data.append(g)
+ 
+        # Kruskal-Wallis across all 4 groups
+        clean = [g.values for g in group_data if len(g) > 0]
+        if len(clean) >= 2:
+            _, p = kruskal(*clean)
+        else:
+            p = np.nan
+ 
+        rows.append({
+            "Variable": label,
+            "HC": vals[0], "BD": vals[1], "MDD": vals[2], "SSD": vals[3],
+            "P": fmt_p(p) if not np.isnan(p) else "—"
+        })
+ 
+    # ── Sex: n (%) female ──
+    sex_mapped = df["sex"].map({"M": 0, "F": 1, "m": 0, "f": 1,
+                                 "male": 0, "female": 1, "Male": 0, "Female": 1})
+    counts = pd.crosstab(df["diagnosis"].fillna("HC"), sex_mapped.fillna(0))
+    try:
+        _, p_sex, _, _ = chi2_contingency(counts)
+    except:
+        p_sex = np.nan
+ 
+    sex_row = {"Variable": "Female, n (%)", "P": fmt_p(p_sex) if not np.isnan(p_sex) else "—"}
+    for name in ["HC", "BD", "MDD", "SSD"]:
+        g = groups[name]
+        s = g["sex"].map({"M": 0, "F": 1, "m": 0, "f": 1,
+                          "male": 0, "female": 1, "Male": 0, "Female": 1})
+        n_f = s.sum()
+        pct = n_f / len(s) * 100
+        sex_row[name] = f"{int(n_f)} ({pct:.1f}%)"
+    rows.append(sex_row)
+ 
+    # ── Linguistic variables ──
+    ling_vars = [
+        ("Words per sentence", f"{model_name}_avg_words"),
+        ("Number of sentences", f"{model_name}_n_sentences"),
+    ]
+ 
+    for label, col in ling_vars:
+        vals = []
+        group_data = []
+        for name in ["HC", "BD", "MDD", "SSD"]:
+            vals.append(mean_sd(groups[name][col]))
+            group_data.append(groups[name][col].dropna())
+ 
+        clean = [g.values for g in group_data if len(g) > 0]
+        _, p = kruskal(*clean) if len(clean) >= 2 else (None, np.nan)
+ 
+        rows.append({
+            "Variable": label,
+            "HC": vals[0], "BD": vals[1], "MDD": vals[2], "SSD": vals[3],
+            "P": fmt_p(p) if not np.isnan(p) else "—"
+        })
+ 
+    # ── Separator row ──
+    rows.append({
+        "Variable": "Clinical measures",
+        "HC": "", "BD": "", "MDD": "", "SSD": "", "P": ""
+    })
+ 
+    # ── Clinical variables (patients only) ──
+    clinical_vars = [
+        ("HAMD-17 total", "HAMD_Sum17"),
+        ("YMRS total", "YMRS_Sum"),
+        ("GAF", "GAF"),
+        ("SAPS total", "SAPS_Sum_ENIGMA"),
+        ("SANS alogia", "SANS_AlogieParalogie_ENIGMA"),
+        ("SANS affective flattening", "SANS_Affektverflachung_ENIGMA"),
+        ("SANS abulia/apathy", "SANS_AbulieApathie_ENIGMA"),
+        ("SANS anhedonia", "SANS_Anhedonie_ENIGMA"),
+        ("SAPS positive FTD", "SAPS_PositiveFormaleDenkstoerung_ENIGMA"),
+        ("SAPS delusions", "SAPS_Wahn_ENIGMA"),
+        ("SAPS hallucinations", "SAPS_Halluzinationen_ENIGMA"),
+        ("SAPS bizarre behaviour", "SAPS_BizarresVerhalten_ENIGMA"),
+        ("TLI impoverished", "TLI_Impoverished"),
+        ("TLI disorganization", "TLI_Disorganization"),
+        ("TLI non-specific", "TLI_Non_specific"),
+        ("Lexical verbal fluency", "LexicalVF"),
+        ("Semantic verbal fluency", "SemanticVF"),
+    ]
+ 
+    for label, col in clinical_vars:
+        if col not in df.columns:
+            continue
+        vals_pat = []
+        group_data = []
+        for name in ["BD", "MDD", "SSD"]:
+            vals_pat.append(mean_sd(groups[name][col]))
+            group_data.append(groups[name][col].dropna())
+ 
+        # Kruskal-Wallis across patient groups only
+        clean = [g.values for g in group_data if len(g) > 0]
+        if len(clean) >= 2 and all(len(g) > 0 for g in clean):
+            _, p = kruskal(*clean)
+        else:
+            p = np.nan
+ 
+        rows.append({
+            "Variable": label,
+            "HC": "—",
+            "BD": vals_pat[0], "MDD": vals_pat[1], "SSD": vals_pat[2],
+            "P": fmt_p(p) if not np.isnan(p) else "—"
+        })
+ 
+    table1 = pd.DataFrame(rows)
+    # Reorder columns
+    table1 = table1[["Variable", "HC", "BD", "MDD", "SSD", "P"]]
+    return table1

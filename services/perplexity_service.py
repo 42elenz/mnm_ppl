@@ -27,7 +27,7 @@ def _load_llm(model_name: str, gpu_memory_utilization: float = 0.80):
 def perplexity_service(
     utterance_df: pd.DataFrame,
     model_name: str = "Qwen/Qwen2.5-32B-Instruct",
-    output_folder: str = "../../00_data/02_perplexities",
+    output_folder: str = "../../00_data/02_perplexities_vllm",
     conditions: list[str] | None = None,
     overwrite: bool = False,
 ) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:

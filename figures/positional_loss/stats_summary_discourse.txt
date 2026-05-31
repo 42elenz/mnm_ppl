@@ -1,0 +1,21 @@
+=== Global Context (Discourse) Interaction Analysis ===
+Model: Qwen2.5-32B-Instruct, Prompt: healthy
+Hypothesis: Psychosis group shows higher loss as discourse context length increases.
+
+                      Mixed Linear Model Regression Results
+==================================================================================
+Model:                     MixedLM        Dependent Variable:        loss         
+No. Observations:          435208         Method:                    REML         
+No. Groups:                253            Scale:                     11.5073      
+Min. group size:           326            Log-Likelihood:            -1149510.2891
+Max. group size:           3772           Converged:                 Yes          
+Mean group size:           1720.2                                                 
+----------------------------------------------------------------------------------
+                                       Coef.  Std.Err.    z    P>|z| [0.025 0.975]
+----------------------------------------------------------------------------------
+Intercept                               3.346    0.027 123.315 0.000  3.293  3.399
+group[T.Psychosis]                      0.310    0.050   6.197 0.000  0.212  0.408
+discourse_token_idx                     0.000    0.000   7.142 0.000  0.000  0.000
+discourse_token_idx:group[T.Psychosis] -0.000    0.000  -2.575 0.010 -0.000 -0.000
+Group Var                               0.109    0.003                            
+==================================================================================

@@ -1,0 +1,21 @@
+=== Positional Loss Interaction Analysis ===
+Model: Qwen2.5-32B-Instruct, Prompt: healthy
+Hypothesis: Psychosis group shows higher loss as context length increases.
+
+                   Mixed Linear Model Regression Results
+============================================================================
+Model:                   MixedLM      Dependent Variable:      loss         
+No. Observations:        435208       Method:                  REML         
+No. Groups:              253          Scale:                   11.3074      
+Min. group size:         326          Log-Likelihood:          -1145668.8906
+Max. group size:         3772         Converged:               Yes          
+Mean group size:         1720.2                                             
+----------------------------------------------------------------------------
+                                 Coef.  Std.Err.    z    P>|z| [0.025 0.975]
+----------------------------------------------------------------------------
+Intercept                         3.799    0.023 162.345 0.000  3.753  3.845
+group[T.Psychosis]                0.276    0.043   6.371 0.000  0.191  0.361
+rel_token_idx                    -0.015    0.000 -74.615 0.000 -0.016 -0.015
+rel_token_idx:group[T.Psychosis] -0.004    0.000  -8.674 0.000 -0.005 -0.003
+Group Var                         0.086    0.003                            
+============================================================================

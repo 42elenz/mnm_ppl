@@ -14,12 +14,13 @@ import pandas as pd
 from pathlib import Path
 
 
-def parse_tat_file(filepath: str) -> list[dict]:
+def parse_tat_file(filepath: str, filter_filler_words: bool = False) -> list[dict]:
     """
     Parse a single TAT text file and extract all Bild sections.
     
     Args:
         filepath: Path to the text file
+        filter_filler_words: Whether to filter out filler words
         
     Returns:
         List of dictionaries with file_id, task, utterance, word_count
@@ -81,6 +82,15 @@ def parse_tat_file(filepath: str) -> list[dict]:
         
         # Clean up the utterance - remove extra whitespace but keep single spaces
         utterance = ' '.join(utterance.split())
+
+        # Optionally filter out filler words (e.g., "äh", "hm")
+        if filter_filler_words:
+            filler_pattern_re = re.compile(r'\b[äöa]?h+m*\b|\bm+h+m*\b', re.IGNORECASE)
+            fillers_found = filler_pattern_re.findall(utterance)
+            if fillers_found:
+                print(f"  {file_id} Bild {task_num}: removed {len(fillers_found)} fillers: {fillers_found}")
+            utterance = filler_pattern_re.sub('', utterance)
+            utterance = ' '.join(utterance.split())
         
         # Calculate word count
         word_count = len(utterance.split())
@@ -89,13 +99,14 @@ def parse_tat_file(filepath: str) -> list[dict]:
             'file_id': file_id,
             'task': task_num,
             'utterance': utterance,
-            'word_count': word_count
+            'word_count': word_count,
+            'filler_count': len(fillers_found) if filter_filler_words else 0
         })
     
     return results
 
 
-def process_all_files(input_dir: str, output_path: str = None) -> pd.DataFrame:
+def process_all_files(input_dir: str, output_path: str = None, filter_filler_words: bool = False) -> pd.DataFrame:
     """
     Process all TAT text files in a directory.
     
@@ -119,7 +130,7 @@ def process_all_files(input_dir: str, output_path: str = None) -> pd.DataFrame:
     
     for txt_file in txt_files:
         try:
-            records = parse_tat_file(str(txt_file))
+            records = parse_tat_file(str(txt_file), filter_filler_words=filter_filler_words)
             all_records.extend(records)
             processed_files += 1
         except Exception as e:
